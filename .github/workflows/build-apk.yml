@@ -50,34 +50,28 @@ jobs:
                       f.write(content)
           '
 
-      # 2. إنشاء ملف index.html برمجياً بطريقة آمنة بدون EOF وبناء الويب
+      # 2. إنشاء ملف index.html بالبايثون وبناء الويب
       - name: Build Web Bundle
         env:
           RUSTFLAGS: "-A warnings"
         run: |
           TARGET_DIR="."
-          if [ -d "apps/bimcraft-web" ]; then
-            TARGET_DIR="apps/bimcraft-web"
-          elif [ -d "apps/bimcraft" ]; then
-            TARGET_DIR="apps/bimcraft"
+          if [ -d "apps/bimcraft-web" ]; then TARGET_DIR="apps/bimcraft-web";
+          elif [ -d "apps/bimcraft" ]; then TARGET_DIR="apps/bimcraft";
+          elif [ -d "apps/web" ]; then TARGET_DIR="apps/web";
           fi
           
+          echo "Moving to $TARGET_DIR"
           cd "$TARGET_DIR"
           
-          if [ ! -f "index.html" ]; then
-            echo "index.html not found! Generating a generic egui canvas..."
-            echo '<!DOCTYPE html>' > index.html
-            echo '<html>' >> index.html
-            echo '<head>' >> index.html
-            echo '    <meta charset="utf-8">' >> index.html
-            echo '    <title>BIMcraft</title>' >> index.html
-            echo '    <style>html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #000000; } canvas { display: block; width: 100%; height: 100%; }</style>' >> index.html
-            echo '</head>' >> index.html
-            echo '<body>' >> index.html
-            echo '    <canvas id="the_canvas_id"></canvas>' >> index.html
-            echo '    <link data-trunk rel="rust" data-wasm-opt="s" />' >> index.html
-            echo '</body>' >> index.html
-            echo '</html>' >> index.html
-          fi
-          
-          trunk
+          # استخدام بايثون لكتابة الملف بشكل آمن
+          python3 -c '
+          import os
+          if not os.path.exists("index.html"):
+              print("Generating generic index.html for BIMcraft...")
+              html_content = """<!DOCTYPE html>
+          <html>
+          <head>
+              <meta charset="utf-8">
+              <title>BIMcraft</title>
+              <style>html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow:
