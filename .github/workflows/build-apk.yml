@@ -31,7 +31,7 @@ jobs:
           cargo install --locked trunk
           sudo apt-get update && sudo apt-get install -y imagemagick
 
-      # 1. خفض قيود الرسوميات (WGPU) بأمان تام لدعم الـ 3D المعماري
+      # 1. خفض قيود الرسوميات لدعم الـ 3D المعماري على الموبايل
       - name: Patch GPU Limits for BIMcraft
         run: |
           echo "Patching WGPU texture limit to 4096..."
@@ -50,34 +50,50 @@ jobs:
                       f.write(content)
           '
 
-      # 2. البحث التلقائي عن تطبيق الويب وبناء الحزمة
+      # 2. إنشاء ملف index.html برمجياً (لتعويض الملف الناقص) وبناء الويب
       - name: Build Web Bundle
         env:
           RUSTFLAGS: "-A warnings"
         run: |
-          # العثور التلقائي على المجلد الذي يحتوي على index.html الخاص بالويب
-          INDEX_PATH=$(find . -name "index.html" -not -path "*/target/*" -not -path "*/node_modules/*" | head -n 1)
-          
-          if [ -z "$INDEX_PATH" ]; then
-            echo "Error: index.html not found!"
-            exit 1
+          TARGET_DIR="."
+          if [ -d "apps/bimcraft-web" ]; then
+            TARGET_DIR="apps/bimcraft-web"
+          elif [ -d "apps/bimcraft" ]; then
+            TARGET_DIR="apps/bimcraft"
           fi
           
-          WEB_DIR=$(dirname "$INDEX_PATH")
-          echo "Found Web Directory at: $WEB_DIR"
+          cd "$TARGET_DIR"
           
-          cd "$WEB_DIR"
+          # إنشاء ملف الواجهة برمجياً لو مش موجود
+          if [ ! -f "index.html" ]; then
+            echo "index.html not found! Generating a generic egui canvas..."
+            cat << 'EOF' > index.html
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <meta charset="utf-8">
+                <title>BIMcraft</title>
+                <style>
+                    html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #000000; }
+                    canvas { display: block; width: 100%; height: 100%; }
+                </style>
+            </head>
+            <body>
+                <canvas id="the_canvas_id"></canvas>
+                <link data-trunk rel="rust" data-wasm-opt="s" />
+            </body>
+            </html>
+            EOF
+          fi
+          
           trunk build --release
           cd "$GITHUB_WORKSPACE"
           
           mkdir -p www
-          # نقل مخرجات البناء أياً كان المسار
-          if [ -d "$WEB_DIR/dist/web" ]; then
-            cp -r "$WEB_DIR/dist/web/"* www/
-          elif [ -d "$WEB_DIR/dist" ]; then
-            cp -r "$WEB_DIR/dist/"* www/
-          else
-            cp -r dist/* www/
+          if [ -d "$TARGET_DIR/dist/web" ]; then
+            cp -r "$TARGET_DIR/dist/web/"* www/
+          elif [ -d "$TARGET_DIR/dist" ]; then
+            cp -r "$TARGET_DIR/dist/"* www/
           fi
 
       # 3. إعداد Capacitor للأندرويد
@@ -95,7 +111,7 @@ jobs:
           MANIFEST="android/app/src/main/AndroidManifest.xml"
           sed -i 's/<application /<application android:hardwareAccelerated="true" android:largeHeap="true" /g' "$MANIFEST"
 
-      # 5. استخراج الأيقونة
+      # 5. استخراج وتجهيز الأيقونة
       - name: Enforce BIMcraft Official Icon
         run: |
           ICON_SRC=""
@@ -123,7 +139,7 @@ jobs:
             done
           fi
 
-      # 6. فرض الاسم
+      # 6. تثبيت الاسم في الأندرويد
       - name: Enforce App Name
         run: |
           sed -i 's/<string name="app_name">.*<\/string>/<string name="app_name">BIMcraft<\/string>/g' android/app/src/main/res/values/strings.xml
@@ -153,7 +169,7 @@ jobs:
           }
           EOF
 
-      # 8. البناء والتوقيع بشهادة رقمية
+      # 8. البناء النهائي والتوقيع بشهادة رقمية (Keystore)
       - name: Build and Sign Android APK
         run: |
           cd android
@@ -167,7 +183,7 @@ jobs:
           APKSIGNER=$(find $ANDROID_HOME/build-tools -name "apksigner" | sort -r | head -n 1)
           $APKSIGNER sign --ks craft.keystore --ks-pass pass:123456 --key-pass pass:123456 $APK_PATH
 
-      # 9. الرفع
+      # 9. رفع الملف للتحميل
       - name: Upload APK File
         uses: actions/upload-artifact@v4
         with:
