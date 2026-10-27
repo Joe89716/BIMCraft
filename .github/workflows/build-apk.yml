@@ -31,47 +31,127 @@ jobs:
           cargo install --locked trunk
           sudo apt-get update && sudo apt-get install -y imagemagick
 
-      # 1. خفض قيود الرسوميات لدعم الـ 3D المعماري على الموبايل
-      - name: Patch GPU Limits for BIMcraft
+      # تعديل كروت الشاشة في مكتبات الرسوميات فقط (لتجنب شاشة الخطأ في BIMcraft)
+      - name: Targeted GPU Limits Patch
         run: |
-          echo "Patching WGPU texture limit to 4096..."
+          cargo fetch --target wasm32-unknown-unknown
+          REGISTRY=$(ls -d /home/runner/.cargo/registry/src/* | head -n 1)
+          for dir in "$REGISTRY"/wgpu* "$REGISTRY"/eframe* "$REGISTRY"/egui_wgpu* ; do
+            if [ -d "$dir" ]; then
+              find "$dir" -type f -name "*.rs" -exec sed -i 's/8192/4096/g' {} + || true
+            fi
+          done
           find apps crates -type f -name "*.rs" -exec sed -i 's/8192/4096/g' {} + || true
-          
-          python3 -c '
-          import os, glob
-          for path in glob.glob("**/*.rs", recursive=True):
-              if "target/" in path: continue
-              with open(path, "r") as f:
-                  content = f.read()
-              if "wgpu_options" in content or "WebOptions" in content or "eframe::WebRunner" in content:
-                  content = content.replace("wgpu::Limits::default()", "wgpu::Limits::downlevel_defaults()")
-                  content = content.replace("wgpu::Limits::downlevel_webgl2_defaults()", "wgpu::Limits::downlevel_defaults()")
-                  with open(path, "w") as f:
-                      f.write(content)
-          '
 
-      # 2. إنشاء ملف index.html بالبايثون وبناء الويب
+      # بناء ملف الواجهة بطريقة الطباعة المباشرة (مضادة لأخطاء السطور) وبناء الحزمة
       - name: Build Web Bundle
         env:
           RUSTFLAGS: "-A warnings"
         run: |
-          TARGET_DIR="."
-          if [ -d "apps/bimcraft-web" ]; then TARGET_DIR="apps/bimcraft-web";
-          elif [ -d "apps/bimcraft" ]; then TARGET_DIR="apps/bimcraft";
-          elif [ -d "apps/web" ]; then TARGET_DIR="apps/web";
+          if [ -d "apps/bimcraft-web" ]; then
+            cd apps/bimcraft-web
+          elif [ -d "apps/bimcraft" ]; then
+            cd apps/bimcraft
+          elif [ -d "apps/web" ]; then
+            cd apps/web
           fi
+
+          if [ ! -f "index.html" ]; then
+            echo '<!DOCTYPE html>' > index.html
+            echo '<html><head><meta charset="utf-8"><title>BIMcraft</title>' >> index.html
+            echo '<style>html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #000; } canvas { display: block; width: 100%; height: 100%; }</style>' >> index.html
+            echo '</head><body>' >> index.html
+            echo '<canvas id="the_canvas_id"></canvas>' >> index.html
+            echo '<link data-trunk rel="rust" data-wasm-opt="s" />' >> index.html
+            echo '</body></html>' >> index.html
+          fi
+
+          trunk build --release
+
+          cd "$GITHUB_WORKSPACE"
+          mkdir -p www
           
-          echo "Moving to $TARGET_DIR"
-          cd "$TARGET_DIR"
+          if [ -d "apps/bimcraft-web/dist/web" ]; then cp -r apps/bimcraft-web/dist/web/* www/ ;
+          elif [ -d "apps/bimcraft/dist" ]; then cp -r apps/bimcraft/dist/* www/ ;
+          elif [ -d "apps/web/dist" ]; then cp -r apps/web/dist/* www/ ;
+          else cp -r dist/* www/ || true ; fi
+
+      - name: Setup Capacitor
+        run: |
+          npm init -y
+          npm install @capacitor/core @capacitor/cli @capacitor/android
+          npx cap init "BIMcraft" "com.craft.bimcraft" --web-dir "www"
+          npx cap add android
+          npx cap sync android
+
+      - name: Enable Hardware Acceleration
+        run: |
+          MANIFEST="android/app/src/main/AndroidManifest.xml"
+          sed -i 's/<application /<application android:hardwareAccelerated="true" android:largeHeap="true" /g' "$MANIFEST"
+
+      - name: Enforce BIMcraft Official Icon
+        run: |
+          ICON_SRC=""
+          if [ -f "packaging/bimcraft.png" ]; then ICON_SRC="packaging/bimcraft.png";
+          elif [ -f "assets/app-icon/icon.png" ]; then ICON_SRC="assets/app-icon/icon.png";
+          elif [ -f "assets/icon.png" ]; then ICON_SRC="assets/icon.png"; fi
           
-          # استخدام بايثون لكتابة الملف بشكل آمن
-          python3 -c '
-          import os
-          if not os.path.exists("index.html"):
-              print("Generating generic index.html for BIMcraft...")
-              html_content = """<!DOCTYPE html>
-          <html>
-          <head>
-              <meta charset="utf-8">
-              <title>BIMcraft</title>
-              <style>html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow:
+          if [ -n "$ICON_SRC" ]; then
+            RES_DIR="android/app/src/main/res"
+            rm -rf "$RES_DIR"/mipmap-anydpi-v26
+            rm -f "$RES_DIR"/drawable/ic_launcher_background.xml
+            rm -f "$RES_DIR"/drawable-v24/ic_launcher_foreground.xml
+            for entry in mdpi:48 hdpi:72 xhdpi:96 xxhdpi:144 xxxhdpi:192; do
+              folder="${entry%%:*}"
+              size="${entry##*:}"
+              mkdir -p "$RES_DIR/mipmap-$folder"
+              convert "$ICON_SRC" -resize "${size}x${size}" "$RES_DIR/mipmap-$folder/ic_launcher.png"
+              convert "$ICON_SRC" -resize "${size}x${size}" "$RES_DIR/mipmap-$folder/ic_launcher_round.png"
+              convert "$ICON_SRC" -resize "${size}x${size}" "$RES_DIR/mipmap-$folder/ic_launcher_foreground.png"
+            done
+          fi
+
+      - name: Enforce App Name
+        run: |
+          sed -i 's/<string name="app_name">.*<\/string>/<string name="app_name">BIMcraft<\/string>/g' android/app/src/main/res/values/strings.xml
+          sed -i 's/<string name="title_activity_main">.*<\/string>/<string name="title_activity_main">BIMcraft<\/string>/g' android/app/src/main/res/values/strings.xml
+
+      - name: Fix Kotlin Duplicate Classes
+        run: |
+          cat << 'EOF' >> android/app/build.gradle
+          configurations.all {
+              resolutionStrategy.eachDependency { DependencyResolveDetails details ->
+                  if (details.requested.group == 'org.jetbrains.kotlin') {
+                      details.useVersion '1.8.22'
+                  }
+              }
+          }
+          dependencies {
+              constraints {
+                  implementation("org.jetbrains.kotlin:kotlin-stdlib-jdk7:1.8.22") {
+                      because("align with kotlin-stdlib")
+                  }
+                  implementation("org.jetbrains.kotlin:kotlin-stdlib-jdk8:1.8.22") {
+                      because("align with kotlin-stdlib")
+                  }
+              }
+          }
+          EOF
+
+      - name: Build and Sign Android APK
+        run: |
+          cd android
+          chmod +x gradlew
+          ./gradlew assembleDebug
+          
+          APK_PATH="app/build/outputs/apk/debug/app-debug.apk"
+          keytool -genkey -v -keystore craft.keystore -alias craft -keyalg RSA -keysize 2048 -validity 10000 -storepass 123456 -keypass 123456 -dname "CN=Craft, OU=Craft, O=Craft, L=Cairo, S=Cairo, C=EG"
+          
+          APKSIGNER=$(find $ANDROID_HOME/build-tools -name "apksigner" | sort -r | head -n 1)
+          $APKSIGNER sign --ks craft.keystore --ks-pass pass:123456 --key-pass pass:123456 $APK_PATH
+
+      - name: Upload APK File
+        uses: actions/upload-artifact@v4
+        with:
+          name: BIMcraft-Offline-APK
+          path: android/app/build/outputs/apk/debug/app-debug.apk
