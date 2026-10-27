@@ -50,7 +50,7 @@ jobs:
                       f.write(content)
           '
 
-      # 2. إنشاء ملف index.html برمجياً (لتعويض الملف الناقص) وبناء الويب
+      # 2. إنشاء ملف index.html برمجياً بطريقة آمنة بدون EOF وبناء الويب
       - name: Build Web Bundle
         env:
           RUSTFLAGS: "-A warnings"
@@ -64,128 +64,20 @@ jobs:
           
           cd "$TARGET_DIR"
           
-          # إنشاء ملف الواجهة برمجياً لو مش موجود
           if [ ! -f "index.html" ]; then
             echo "index.html not found! Generating a generic egui canvas..."
-            cat << 'EOF' > index.html
-            <!DOCTYPE html>
-            <html>
-            <head>
-                <meta charset="utf-8">
-                <title>BIMcraft</title>
-                <style>
-                    html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #000000; }
-                    canvas { display: block; width: 100%; height: 100%; }
-                </style>
-            </head>
-            <body>
-                <canvas id="the_canvas_id"></canvas>
-                <link data-trunk rel="rust" data-wasm-opt="s" />
-            </body>
-            </html>
-            EOF
+            echo '<!DOCTYPE html>' > index.html
+            echo '<html>' >> index.html
+            echo '<head>' >> index.html
+            echo '    <meta charset="utf-8">' >> index.html
+            echo '    <title>BIMcraft</title>' >> index.html
+            echo '    <style>html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #000000; } canvas { display: block; width: 100%; height: 100%; }</style>' >> index.html
+            echo '</head>' >> index.html
+            echo '<body>' >> index.html
+            echo '    <canvas id="the_canvas_id"></canvas>' >> index.html
+            echo '    <link data-trunk rel="rust" data-wasm-opt="s" />' >> index.html
+            echo '</body>' >> index.html
+            echo '</html>' >> index.html
           fi
           
-          trunk build --release
-          cd "$GITHUB_WORKSPACE"
-          
-          mkdir -p www
-          if [ -d "$TARGET_DIR/dist/web" ]; then
-            cp -r "$TARGET_DIR/dist/web/"* www/
-          elif [ -d "$TARGET_DIR/dist" ]; then
-            cp -r "$TARGET_DIR/dist/"* www/
-          fi
-
-      # 3. إعداد Capacitor للأندرويد
-      - name: Setup Capacitor
-        run: |
-          npm init -y
-          npm install @capacitor/core @capacitor/cli @capacitor/android
-          npx cap init "BIMcraft" "com.craft.bimcraft" --web-dir "www"
-          npx cap add android
-          npx cap sync android
-
-      # 4. تفعيل التسريع العتادي
-      - name: Enable Hardware Acceleration
-        run: |
-          MANIFEST="android/app/src/main/AndroidManifest.xml"
-          sed -i 's/<application /<application android:hardwareAccelerated="true" android:largeHeap="true" /g' "$MANIFEST"
-
-      # 5. استخراج وتجهيز الأيقونة
-      - name: Enforce BIMcraft Official Icon
-        run: |
-          ICON_SRC=""
-          if [ -f "packaging/bimcraft.png" ]; then
-            ICON_SRC="packaging/bimcraft.png"
-          elif [ -f "assets/app-icon/icon.png" ]; then
-            ICON_SRC="assets/app-icon/icon.png"
-          elif [ -f "assets/icon.png" ]; then
-            ICON_SRC="assets/icon.png"
-          fi
-
-          if [ -n "$ICON_SRC" ]; then
-            RES_DIR="android/app/src/main/res"
-            rm -rf "$RES_DIR"/mipmap-anydpi-v26
-            rm -f "$RES_DIR"/drawable/ic_launcher_background.xml
-            rm -f "$RES_DIR"/drawable-v24/ic_launcher_foreground.xml
-
-            for entry in mdpi:48 hdpi:72 xhdpi:96 xxhdpi:144 xxxhdpi:192; do
-              folder="${entry%%:*}"
-              size="${entry##*:}"
-              mkdir -p "$RES_DIR/mipmap-$folder"
-              convert "$ICON_SRC" -resize "${size}x${size}" "$RES_DIR/mipmap-$folder/ic_launcher.png"
-              convert "$ICON_SRC" -resize "${size}x${size}" "$RES_DIR/mipmap-$folder/ic_launcher_round.png"
-              convert "$ICON_SRC" -resize "${size}x${size}" "$RES_DIR/mipmap-$folder/ic_launcher_foreground.png"
-            done
-          fi
-
-      # 6. تثبيت الاسم في الأندرويد
-      - name: Enforce App Name
-        run: |
-          sed -i 's/<string name="app_name">.*<\/string>/<string name="app_name">BIMcraft<\/string>/g' android/app/src/main/res/values/strings.xml
-          sed -i 's/<string name="title_activity_main">.*<\/string>/<string name="title_activity_main">BIMcraft<\/string>/g' android/app/src/main/res/values/strings.xml
-
-      # 7. حل تعارض كوتلن
-      - name: Fix Kotlin Duplicate Classes
-        run: |
-          cat << 'EOF' >> android/app/build.gradle
-
-          configurations.all {
-              resolutionStrategy.eachDependency { DependencyResolveDetails details ->
-                  if (details.requested.group == 'org.jetbrains.kotlin') {
-                      details.useVersion '1.8.22'
-                  }
-              }
-          }
-          dependencies {
-              constraints {
-                  implementation("org.jetbrains.kotlin:kotlin-stdlib-jdk7:1.8.22") {
-                      because("align with kotlin-stdlib")
-                  }
-                  implementation("org.jetbrains.kotlin:kotlin-stdlib-jdk8:1.8.22") {
-                      because("align with kotlin-stdlib")
-                  }
-              }
-          }
-          EOF
-
-      # 8. البناء النهائي والتوقيع بشهادة رقمية (Keystore)
-      - name: Build and Sign Android APK
-        run: |
-          cd android
-          chmod +x gradlew
-          ./gradlew assembleDebug
-          
-          APK_PATH="app/build/outputs/apk/debug/app-debug.apk"
-          
-          keytool -genkey -v -keystore craft.keystore -alias craft -keyalg RSA -keysize 2048 -validity 10000 -storepass 123456 -keypass 123456 -dname "CN=Craft, OU=Craft, O=Craft, L=Cairo, S=Cairo, C=EG"
-          
-          APKSIGNER=$(find $ANDROID_HOME/build-tools -name "apksigner" | sort -r | head -n 1)
-          $APKSIGNER sign --ks craft.keystore --ks-pass pass:123456 --key-pass pass:123456 $APK_PATH
-
-      # 9. رفع الملف للتحميل
-      - name: Upload APK File
-        uses: actions/upload-artifact@v4
-        with:
-          name: BIMcraft-Offline-APK
-          path: android/app/build/outputs/apk/debug/app-debug.apk
+          trunk
